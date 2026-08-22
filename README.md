@@ -1,181 +1,226 @@
 # SeaDrop Mint Bot
 
-An open source, self-hosted Telegram bot that automatically mints NFTs from OpenSea SeaDrop collections on Ethereum mainnet. Supports up to 100 concurrent burner wallets, per-user settings, scheduled mints, and full risk validation before every mint.
+An open source, self-hosted Telegram bot that automatically mints NFTs from **OpenSea SeaDrop / Drops** collections. Built for timed WL/allowlist drops: it reads drop stages, waits for the eligible window, and fires with a low-latency snipe path across many burner wallets.
+
+Supports **Ethereum mainnet** and **Robinhood Chain**, up to 100 concurrent wallets, per-user settings, scheduled stage-aware mints, RPC ranking with fallback, proxy rotation to dodge rate limits, and full risk validation before every mint.
+
+> ⚠️ Self-hosted, burner-wallet tooling. No warranty. Use at your own risk. Not affiliated with OpenSea.
+
+---
 
 ## ✨ Features
 
-- 🤖 **Automated Minting** - Queue multiple mints, bot handles everything
-- 🎫 **Whitelist/Allowlist Support** - Automatic WL mint via OpenSea Drops API (signature-based)
-- ⏰ **Scheduled Mints** - Schedule mints for specific times (perfect for WL/allowlist drops at 10 PM)
-- ⚡ **Optimized Gas** - Dynamic priority fee from network, minimal buffers (~0.00002-0.00003 ETH per mint)
-- 🚀 **Fast Execution** - 2-second polling, optimized API timeouts (~12-15 seconds total)
-- 💰 **Multi-Wallet Support** - Up to 100 concurrent wallets with automatic rotation
-- 🛡️ **Risk Validation** - Blacklist, Etherscan, GoPlus security checks before every mint
-- 🧪 **Dry-Run Mode** - Test mints with `eth_call` simulation (no transaction sent)
-- 📊 **Per-User Settings** - Each user can configure their own limits and preferences
-- 🔄 **Queue Management** - View status, history, cancel pending jobs
+- 🤖 **Automated minting** — queue mints; the bot resolves, validates, and executes end-to-end
+- 🎫 **Stage-aware WL/allowlist** — reads OpenSea drop stages (public / signed presale / allowlist) and lets OpenSea auto-select the stage your wallet is eligible for; never force-picks public
+- 🛡️ **Window Guard** — if a stage hasn't opened, polls until *any* eligible stage goes live, then fires (no early 422 spam)
+- 🚀 **Snipe mode** — pre-arms wallet + gas before open, hammers `/mint` until it returns a signed tx, then broadcasts instantly (skips live `estimateGas` on the hot path)
+- 📡 **Parallel broadcast** — signs once and blasts the raw tx to *all* ranked RPCs simultaneously; first landing wins
+- 🌐 **RPC management** — DB-backed custom RPCs, benchmarked and ranked fastest-first with automatic viem fallback
+- 🔒 **Proxy rotation** — per-wallet proxy assignment so N wallets hit OpenSea from N IPs, bypassing per-IP `429`; built-in backoff + jitter when no proxies are set
+- ⏰ **Scheduled mints** — schedule for a specific time (WIB), with optional wallet ranges
+- 💰 **Multi-wallet** — up to 100 concurrent burner wallets with a PQueue-bounded parallel mint loop
+- ⛓️ **Multi-chain** — Ethereum + Robinhood Chain, each with a tuned snipe profile
+- 🔑 **Runtime API key control** — `/api` hot-swaps the OpenSea key without a redeploy (validated before it's saved)
+- 🧪 **Dry-run mode** — simulate mints via `eth_call`, no transaction sent
+- 📊 **Per-user settings** — each user configures their own price/gas/quantity/priority limits
+- 🕒 **NTP clock check** — verifies host clock drift at boot so scheduled snipes fire on time
+- 🔎 **Risk validation** — blacklist, Etherscan verification, contract age, GoPlus security scan
 
 ---
 
 ## Prerequisites
 
-- **Node.js** v20 or higher
-- **npm** v9 or higher
-- **Redis** (optional — enables persistent job queue across restarts)
-- API keys: Telegram Bot, Alchemy, OpenSea v2, Etherscan
+- **Node.js** v20+ and **npm** v9+
+- **Redis** (optional — enables a persistent BullMQ job queue across restarts)
+- API keys: Telegram Bot, Alchemy (Ethereum), OpenSea API v2, Etherscan
 
 ---
 
 ## Installation
 
 ```bash
-# 1. Clone the repository
-git clone https://gitlab.com/oezank/seadrop_nft_minter.git
-cd seadrop_nft_minter
+# 1. Clone
+git clone https://github.com/Kuriare7Rz/seadrop-noir-bot.git
+cd seadrop-noir-bot
 
 # 2. Install dependencies
 npm install
 
-# 3. Copy environment file
+# 3. Copy the environment template
 cp .env.example .env
 
-# 4. Edit .env with your values
+# 4. Fill in .env (see the configuration guide below)
 nano .env
 
 # 5. Build TypeScript
 npm run build
 
-# 6. Start the bot
+# 6. Start
 npm start
 ```
+
+Type-check without emitting: `npm run typecheck`.
 
 ---
 
 ## .env Configuration Guide
 
+### Core (required)
+
 | Variable | Required | Description |
 |---|---|---|
 | `TELEGRAM_BOT_TOKEN` | ✅ | From [@BotFather](https://t.me/BotFather) |
-| `ADMIN_TELEGRAM_ID` | ✅ | Your Telegram numeric user ID |
-| `ALCHEMY_API_KEY` | ✅ | From [alchemy.com](https://alchemy.com) |
-| `BACKUP_RPC_URL` | ✅ | Fallback RPC (default: cloudflare-eth.com) |
-| `OPENSEA_API_KEY` | ✅ | From [OpenSea Developer Portal](https://docs.opensea.io) |
+| `ADMIN_TELEGRAM_ID` | ✅ | Your Telegram numeric user ID (admin-only commands) |
+| `ALCHEMY_API_KEY` | ✅ | From [alchemy.com](https://alchemy.com) (Ethereum primary RPC) |
+| `BACKUP_RPC_URL` | — | Fallback RPC (default: `cloudflare-eth.com`) |
+| `OPENSEA_API_KEY` | ✅ | OpenSea API v2 key (can be hot-swapped at runtime via `/api`) |
 | `ETHERSCAN_API_KEY` | ✅ | From [etherscan.io/apis](https://etherscan.io/apis) |
-| `DEFAULT_MAX_MINT_PRICE_ETH` | — | Default max mint price in ETH (default: 0.1) |
-| `DEFAULT_MAX_GAS_ETH` | — | Default max gas fee in ETH (**optimized: 0.005**) |
-| `DEFAULT_QUANTITY` | — | Default mint quantity per job (default: 1) |
-| `LOW_BALANCE_THRESHOLD_ETH` | — | Warn when wallet balance below this (default: 0.0001) |
-| `MAX_PRIORITY_FEE_GWEI` | — | EIP-1559 priority fee in gwei (**optimized: 0.01**, supports decimals) |
-| `TX_TIMEOUT_SECONDS` | — | Transaction timeout in seconds (**optimized: 120**) |
-| `QUEUE_CONCURRENCY` | — | Max concurrent mint jobs (default: 10) |
-| `GOPLUS_STRICT_MODE` | — | Block mints if GoPlus API fails (default: false) |
-| `DRY_RUN_MODE` | — | Force all `/mint` commands to simulate only — no transactions sent (default: false) |
-| `REDIS_URL` | — | Redis URL for persistent queue (optional) |
+
+### Mint defaults (overridable per-user via `/set_*`)
+
+| Variable | Default | Description |
+|---|---|---|
+| `DEFAULT_MAX_MINT_PRICE_ETH` | `0.1` | Max mint price guard |
+| `DEFAULT_MAX_GAS_ETH` | `0.005` | Max gas spend guard |
+| `DEFAULT_QUANTITY` | `1` | Quantity per job |
+| `LOW_BALANCE_THRESHOLD_ETH` | `0.0001` | Warn below this balance |
+| `LOW_BALANCE_ALERTS` | `false` | Push low-balance warnings to Telegram (balance is always checked + logged regardless) |
+| `MAX_PRIORITY_FEE_GWEI` | `0.01` | EIP-1559 priority fee (decimals OK) |
+| `TX_TIMEOUT_SECONDS` | `120` | Transaction wait timeout |
+| `QUEUE_CONCURRENCY` | `10` | Max concurrent mint jobs |
+| `MULTI_WALLET_CONCURRENCY` | `5` | Wallets minting in parallel (1–100) |
+| `MULTI_WALLET_PROGRESS_INTERVAL` | `10` | Progress log interval (s) |
+| `GOPLUS_STRICT_MODE` | `false` | Block mint if GoPlus API is unavailable |
+| `DRY_RUN_MODE` | `false` | Force all `/mint` to simulate (no tx sent) |
+
+### Multi-chain
+
+| Variable | Default | Description |
+|---|---|---|
+| `MINT_CHAIN` | `ethereum` | Active chain: `ethereum` or `robinhood` |
+| `ROBINHOOD_RPC_URL` | public RPC | Robinhood Chain RPC (used when `MINT_CHAIN=robinhood`) |
+
+### Window Guard (stage-aware)
+
+| Variable | Default | Description |
+|---|---|---|
+| `WINDOW_GUARD_ENABLED` | `true` | Poll until an eligible stage opens, then fire |
+| `WINDOW_GUARD_MAX_WAIT_SECONDS` | `900` | Max wait before giving up |
+| `WINDOW_GUARD_POLL_MS` | `3000` | Poll interval while waiting |
+| `SCHEDULE_AUTO_ALIGN` | `true` | Align schedule time to stage start if set too early |
+
+### Snipe mode
+
+Chain-aware knobs are **blank by default** → they inherit the active chain's tuned profile in `src/chains.ts`. Set a value only to force-override across all chains.
+
+| Variable | Default | Description |
+|---|---|---|
+| `SNIPE_ENABLED` | `true` | Enable the snipe fast-path for scheduled mints |
+| `SNIPE_RPC_PRECHECK` | `true` | Benchmark + re-rank RPCs during pre-arm |
+| `SNIPE_PARALLEL_BROADCAST` | `true` | Blast signed tx to all ranked RPCs (first wins) |
+| `SNIPE_MAX_HAMMER_SECONDS` | `60` | Max hammer duration |
+| `SNIPE_LEAD_MS` | profile | Start hammering N ms before open |
+| `SNIPE_HAMMER_INTERVAL_MS` | profile | ms between `/mint` attempts |
+| `SNIPE_PRIORITY_FEE_GWEI` | profile | Priority fee on snipe path |
+| `SNIPE_GAS_LIMIT` | profile | Fixed gas limit (skips `estimateGas`) |
+| `SNIPE_BASEFEE_MULTIPLIER` | profile | `maxFee = baseFee * mult + tip` |
+
+### Proxy + rate limiting
+
+| Variable | Default | Description |
+|---|---|---|
+| `PROXY_ENABLED` | `true` | Master switch (only active if the DB proxy pool is non-empty) |
+| `PROXY_CHECK_TIMEOUT_MS` | `8000` | Timeout for `/check_proxy` health checks |
+| `RATE_LIMIT_BACKOFF_MS` | `1000` | Wait on `429` (or `Retry-After` if provided) |
+| `HAMMER_JITTER_MS` | `120` | Random 0..N ms per attempt to spread bursts |
+| `RATE_LIMIT_MAX` | `5` | Command rate limit per window |
+| `RATE_LIMIT_WINDOW_MS` | `60000` | Rate limit window |
+
+### Optional
+
+| Variable | Description |
+|---|---|
+| `REDIS_URL` | Enables BullMQ persistent queue; falls back to in-memory p-queue if unset |
 
 ---
 
 ## Adding Burner Wallets
 
-Add wallet private keys to your `.env` file:
+Add private keys to `.env`:
 
 ```env
-WALLET_1_KEY=0xabc123...
-WALLET_2_KEY=0xdef456...
-WALLET_3_KEY=0x789abc...
+WALLET_1_KEY=0x<burner_key_1>
+WALLET_2_KEY=0x<burner_key_2>
+WALLET_3_KEY=0x<burner_key_3>
+# ... up to WALLET_100_KEY
 ```
 
-- Supports up to **100 wallets** (`WALLET_1_KEY` to `WALLET_100_KEY`)
-- Each wallet is assigned exclusively to one mint job at a time
-- Use `/wallets` command to check balances and status
-- Use `/admin_reload` to reload wallets without restarting the bot
+- Supports up to **100 wallets** (`WALLET_1_KEY` … `WALLET_100_KEY`)
+- Each wallet is exclusively assigned to one job at a time
+- `/wallets` shows balances + status; `/add_wallet <key>` adds one at runtime; `/admin_reload` reloads from `.env` without restart
 
-> ⚠️ **Use burner wallets only.** Never add wallets containing significant funds.
+> ⚠️ **Use burner wallets only.** Never load wallets holding significant funds.
 
 ---
 
 ## Running the Bot
 
-### Development
-
 ```bash
+# Development (ts-node/tsx watch)
 npm run dev
-```
 
-### Production (Node.js)
+# Production (Node.js)
+npm run build && npm start
 
-```bash
-npm run build
-npm start
-```
-
-### Production (Docker — without Redis)
-
-```bash
+# Production (Docker, no Redis)
 docker compose up -d bot
-```
 
-### Production (Docker — with Redis persistent queue)
-
-```bash
+# Production (Docker + Redis persistent queue)
 docker compose --profile redis up -d
 ```
 
 ---
 
-## Whitelist/Allowlist Mint Support
+## OpenSea API Key Management (`/api`)
 
-Bot **automatically detects and handles WL mints** via OpenSea Drops API:
+The OpenSea key can expire or get revoked. A dead key makes the Drops API return `401`, which previously caused the bot to silently fall back to on-chain public-only detection and misreport WL/presale drops as *"Mint has not started yet"* (stages/target vanish).
 
-- ✅ **Public Sale** - Anyone can mint (already supported)
-- ✅ **Signed Presale (WL)** - Wallet must be in whitelist (NEW!)
-- ✅ **Auto-detection** - Bot automatically selects eligible stage
-- ✅ **No manual signature extraction** - OpenSea API handles everything
+`/api` fixes this: it hot-swaps the key at runtime (stored in the DB, surviving restarts and taking precedence over `.env`), and the mint flow now fails loudly and actionably on auth errors instead of firing blind.
 
-**How it works:**
-1. User `/mint` or `/schedule_mint` a Drop collection
-2. Bot calls OpenSea API to check eligibility
-3. If wallet in WL → API returns transaction with signature
-4. Bot executes mint automatically
+| Command | Description |
+|---|---|
+| `/api` | Show the active key + source (`.env` or runtime override) |
+| `/api status` | Show the key **plus a live auth probe** |
+| `/api test [slug]` | Live-verify the effective key against the Drops API |
+| `/api set <key>` | Validate, persist, and hot-apply a new key (admin). The message containing the key is auto-deleted |
+| `/api reset` | Drop the override and fall back to the `.env` key (admin) |
 
-**Error handling:**
-- `Not eligible` - Wallet not in whitelist
-- `Drop inactive` - WL stage not started/ended
-- `API unavailable` - Falls back to manual on-chain detection
+**Getting a key:** free keys can be created with `POST https://api.opensea.io/api/v2/auth/keys` (no auth needed). Limits: read 600/h, write 30/h; **max 2 keys/day**, **expire after 7 days**. For higher limits, request one from the [OpenSea Developer Portal](https://docs.opensea.io).
 
 ---
 
-## Scheduled Mints (Perfect for Timed WL Drops!)
+## Scheduled Mints
 
-Schedule mints to execute automatically at a specific time - perfect for allowlist drops when you want to sleep!
+Schedule mints to fire automatically at a set time (times are **WIB / Asia-Jakarta**), ideal for timed WL drops.
 
-**Example Usage:**
 ```bash
-# Schedule a mint for 10 PM tonight
-/schedule_mint https://opensea.io/collection/azuki 22:00
+# Schedule for 10 PM tonight
+/schedule_mint https://opensea.io/collection/<slug> 22:00
 
-# Schedule with wallet range (wallets 1-5)
-/schedule_mint https://opensea.io/collection/azuki 22:00 1 5
+# Wallet range (wallets 1–5)
+/schedule_mint https://opensea.io/collection/<slug> 22:00 1 5
 
-# Use 12-hour format
-/schedule_mint https://opensea.io/collection/azuki 10:00 PM
+# Max quantity per wallet
+/schedule_mint_max https://opensea.io/collection/<slug> 23:00 1 67
 
-# Full datetime
-/schedule_mint https://opensea.io/collection/azuki "2024-06-13 22:00"
-
-# View all schedules
+# View / cancel
 /list_schedules
-
-# Cancel a schedule
 /cancel_schedule <schedule_id>
 ```
 
-**How it works:**
-- Bot checks every 30 seconds for due schedules
-- Automatically queues the mint job at scheduled time
-- Status updates: PENDING → EXECUTED/FAILED
-- Perfect for timed WL/allowlist mints
-
-**See [SCHEDULE_FEATURE.md](SCHEDULE_FEATURE.md) for complete documentation.**
+- The scheduler checks for due jobs on a short interval and queues them at the target time.
+- With snipe mode on, a scheduled job pre-arms before the window and fires within the first live moment of the eligible stage.
+- All wallets = `1 67`; pasukan-only (skip wallet 1) = `2 67`.
 
 ---
 
@@ -183,32 +228,55 @@ Schedule mints to execute automatically at a specific time - perfect for allowli
 
 | Command | Description |
 |---|---|
-| `/start` | Welcome message and wallet pool status |
-| `/help` | Show all available commands |
-| `/mint <url>` | Start a mint job for an OpenSea collection URL |
-| `/mint_max <url> [from] [to]` | Mint maximum quantity, optionally specify wallet range |
-| `/status` | Show your active mint jobs |
-| `/history` | Show your last 20 mint transactions |
-| `/cancel <job_id>` | Cancel a pending mint job |
+| `/start` | Welcome + wallet pool status |
+| `/help` | Show all commands |
+| **Minting** | |
+| `/mint <url>` | Mint a collection by OpenSea URL |
+| `/mint_max <url> [from] [to]` | Mint max quantity, optional wallet range |
+| `/dryrun <url>` / `/preflight <url>` | Simulate a mint (no tx sent) |
+| `/confirm` | Confirm a pending high-value mint |
+| `/status` | Your active mint jobs |
+| `/status_plus` | Detailed status view |
+| `/history` | Last 20 mint transactions |
+| `/cancel <job_id>` | Cancel a pending job |
 | **Scheduled Mints** | |
-| `/schedule_mint <url> <time> [from] [to]` | Schedule a mint for later (e.g. `22:00` or `10:00 PM`) |
-| `/list_schedules` | Show all your scheduled mints |
+| `/schedule_mint <url> <time> [from] [to]` | Schedule a mint (WIB) |
+| `/schedule_mint_max <url> <time> [from] [to]` | Schedule a max-quantity mint |
+| `/list_schedules` | List your schedules |
 | `/cancel_schedule <id>` | Cancel a scheduled mint |
-| **Wallet Management** | |
-| `/wallets` | Show wallet pool: address, balance, status |
+| **OpenSea API Key** | |
+| `/api` · `/api status` · `/api test [slug]` | Inspect / verify the key |
+| `/api set <key>` · `/api reset` | Set or reset the key (admin) |
+| **RPC (speed + fallback)** | |
+| `/rpcs` | List RPCs for the active chain, fastest-first |
+| `/check_rpc` | Benchmark + re-rank all RPCs |
+| `/add_rpc <url> [label]` | Add an RPC (admin) |
+| `/del_rpc <url\|#>` | Remove an RPC (admin) |
+| `/toggle_rpc <url>` | Enable/disable an RPC (admin) |
+| **Proxy (bypass 429)** | |
+| `/proxies` | List the proxy pool + health |
+| `/check_proxy` | Test proxies, verify distinct exit IPs |
+| `/add_proxy <url> [label]` | Add one, or paste many (admin) |
+| `/del_proxy <url\|#>` | Remove one (admin) |
+| `/clear_proxies` | Wipe the pool (admin) |
+| `/toggle_proxy <url>` | Enable/disable one (admin) |
+| **Wallets** | |
+| `/wallets` | Wallet pool: address, balance, status |
+| `/add_wallet <key>` | Add a wallet at runtime (admin) |
 | **Settings** | |
-| `/settings` | Show your current settings |
-| `/set_maxprice <eth>` | Set max mint price (e.g. `/set_maxprice 0.05`) |
-| `/set_maxgas <eth>` | Set max gas fee (e.g. `/set_maxgas 0.005`) |
-| `/set_quantity <n>` | Set mint quantity per job (e.g. `/set_quantity 2`) |
-| `/set_priorityfee <gwei>` | Set EIP-1559 priority fee (e.g. `/set_priorityfee 0.01`) |
-| **Admin Commands** | |
-| `/blacklist <contract>` | Add contract to local blacklist (admin only) |
-| `/whitelist <contract>` | Remove contract from blacklist (admin only) |
-| `/admin_stats` | Total mints, success rate, wallet balances (admin only) |
-| `/admin_reload` | Reload wallet pool from .env without restart (admin only) |
-| `/dryrun <url>` | Simulate a mint without sending a transaction |
-| `/admin_blacklist` | Show full blacklist (admin only) |
+| `/settings` | Show current settings |
+| `/set_maxprice <eth>` | Set max mint price |
+| `/set_maxgas <eth>` | Set max gas fee |
+| `/set_quantity <n>` | Set quantity per job |
+| `/set_priorityfee <gwei>` | Set EIP-1559 priority fee |
+| **Chain / Admin** | |
+| `/chain [key]` | Show or switch the active chain (admin) |
+| `/blacklist <contract>` | Add contract to blacklist (admin) |
+| `/whitelist <contract>` | Remove from blacklist (admin) |
+| `/admin_stats` | Mints, success rate, gas spent (admin) |
+| `/admin_reload` | Reload wallet pool from `.env` (admin) |
+| `/admin_blacklist` | Show full blacklist (admin) |
+| `/panic` | Emergency stop (admin) |
 
 ---
 
@@ -218,147 +286,170 @@ Schedule mints to execute automatically at a specific time - perfect for allowli
 Telegram User
       │
       ▼
-┌─────────────────────────────────────┐
-│           TELEGRAF BOT LAYER        │
-│  middleware: auth, rateLimit        │
-│  commands: start, mint, wallet,     │
-│            settings, history, admin │
-└──────────────┬──────────────────────┘
-               │
-               ▼
-┌─────────────────────────────────────┐
-│            QUEUE LAYER              │
-│  p-queue (primary, in-memory)       │
-│  BullMQ + Redis (optional)          │
-└──────────────┬──────────────────────┘
-               │
-               ▼
-┌─────────────────────────────────────┐
-│           MINT ENGINE               │
-│  urlParser → collectionResolver     │
-│  → seadropDetector                  │
-│  → mintConfigReader                 │
-│  → calldataBuilder                  │
-│  → gasEstimator                     │
-│  → dryRun (simulation / eth_call)   │
-│  → transactionSender                │
-│  → txMonitor                        │
-└──────┬──────────────┬───────────────┘
-       │              │
-       ▼              ▼
-┌────────────┐  ┌─────────────────────┐
-│   WALLET   │  │    RISK LAYER       │
-│   LAYER    │  │  validator          │
-│  pool      │  │  blacklist          │
-│  balance   │  │  etherscanCheck     │
-│  checker   │  │  goplusCheck        │
-└────────────┘  └─────────────────────┘
-       │
+┌──────────────────────────────────────────────┐
+│              TELEGRAF BOT LAYER               │
+│  middleware: auth (admin), rate limit         │
+│  commands: mint, schedule, api, rpc, proxy,   │
+│            wallet, settings, chain, admin     │
+└───────────────┬──────────────────────────────┘
+                │
+                ▼
+┌──────────────────────────────────────────────┐
+│                 QUEUE LAYER                   │
+│  p-queue (in-memory)  ·  BullMQ + Redis (opt) │
+└───────────────┬──────────────────────────────┘
+                │
+                ▼
+┌──────────────────────────────────────────────┐
+│                 MINT ENGINE                   │
+│  urlParser → collectionResolver               │
+│  → checkIfDrop (OpenSea Drops API)            │
+│     ├─ stage-aware: anyStageOpen / nextStage  │
+│     ├─ Window Guard: wait for eligible stage  │
+│     └─ Snipe: pre-arm → hammer /mint → blast  │
+│  → dropMinter (signed tx from OpenSea)        │
+│  fallback → seadropDetector → mintConfigReader│
+│           → calldataBuilder → gasEstimator    │
+│  → dryRun (eth_call) → transactionSender      │
+│  → txMonitor                                  │
+└──────┬───────────────────────┬────────────────┘
+       │                       │
+       ▼                       ▼
+┌───────────────┐     ┌────────────────────────┐
+│  WALLET LAYER │     │      RISK LAYER        │
+│  pool         │     │  validator             │
+│  balanceCheck │     │  blacklist             │
+│  keys (100)   │     │  etherscanCheck        │
+└───────────────┘     │  goplusCheck           │
+       │              └────────────────────────┘
        ▼
-┌─────────────────────────────────────┐
-│         INFRASTRUCTURE              │
-│  rpc/client (Viem + Alchemy)        │
-│  db (SQLite + better-sqlite3)       │
-│  config (Zod + dotenv)              │
-└─────────────────────────────────────┘
+┌──────────────────────────────────────────────┐
+│               INFRASTRUCTURE                  │
+│  rpc/client   — ranked RPCs + viem fallback   │
+│  rpc/proxyPool — per-wallet proxy rotation    │
+│  db (SQLite / better-sqlite3):                │
+│     users, mint_jobs, scheduled_mints,        │
+│     blacklist, audit_logs, rpc_endpoints,     │
+│     proxies, app_settings                     │
+│  config (Zod + dotenv)                        │
+│  chains — per-chain snipe profiles            │
+│  utils/clockCheck — NTP drift guard           │
+└──────────────────────────────────────────────┘
 ```
 
-### SeaDrop Mint Flow
+### OpenSea Drops mint flow (primary path)
+
+1. `checkIfDrop(slug)` reads the drop + its stages from the OpenSea Drops API.
+   - On `401/403` it raises an auth error (surface to `/api`) instead of silently degrading.
+2. Stage logic decides whether a stage is open now or opens soon.
+   - **Snipe:** pre-arm wallet + gas, hammer `POST /drops/{slug}/mint` until it returns a signed tx.
+   - **Window Guard:** if nothing's open yet, poll until any eligible stage goes live.
+3. OpenSea returns the ready-to-send transaction (it auto-selects the stage your wallet is eligible for — WL, presale, or public).
+4. `transactionSender` signs and broadcasts. With >1 RPC, `sendMintTransactionParallel` blasts to all ranked RPCs; first landing wins.
+
+### Fallback: manual on-chain SeaDrop
+
+If a collection is not served by the Drops API, the bot detects the SeaDrop contract on-chain, reads the public drop config, builds the calldata, and mints directly:
 
 ```
-tx.to = SeaDrop contract (0x00005EA00Ac477B1030CE78506496e8C2dE24bf5)
+tx.to = SeaDrop contract (e.g. 0x00005EA00Ac477B1030CE78506496e8C2dE24bf5)
 mintPublic(nftContract, feeRecipient, address(0), quantity)
-    │
-    └── SeaDrop validates → calls ERC721SeaDrop.mintSeaDrop()
-                                        │
-                                        └── NFT minted to wallet
+    └── SeaDrop validates → ERC721SeaDrop.mintSeaDrop() → NFT minted
 ```
 
 ---
 
 ## Security Warnings
 
-> ⚠️ **This bot is designed for self-hosted deployment only.**
+> ⚠️ Designed for self-hosted deployment only.
 
-1. **Protect your `.env` file.** It contains private keys and API keys. Set file permissions: `chmod 600 .env`
-2. **Use burner wallets only.** Never load wallets containing significant ETH or valuable NFTs.
-3. **Never share your `.env` file** or commit it to version control. The `.gitignore` excludes it by default.
-4. **Private keys are never logged, displayed, or transmitted** by this bot. Verify this yourself before deploying.
-5. **Run on a trusted server.** Anyone with server access can read your `.env` file.
-6. **No warranty.** This is open source software. Use at your own risk.
+1. **Protect `.env`** — it holds private keys and API keys. `chmod 600 .env`.
+2. **Burner wallets only.** Never load wallets with significant ETH or valuable NFTs.
+3. **Never commit `.env`** — it's gitignored by default (along with `*.db` and `logs/`).
+4. **Private keys are never logged, displayed, or transmitted.** Verify this yourself before deploying.
+5. **Run on a trusted server.** Anyone with server/DB access can read secrets.
+6. **The `/api` key is stored in the local SQLite DB** (`data/bot.db`), which is gitignored — keep the server secured.
+7. **No warranty.** Open source; use at your own risk.
 
 ---
 
 ## Gas Optimization
 
-This bot is **heavily optimized for minimal gas costs**:
+Tuned for minimal gas while staying competitive on timed drops.
 
-### Default Settings (Optimized)
-- `MAX_PRIORITY_FEE_GWEI=0.01` - Very low priority fee
-- `DEFAULT_MAX_GAS_ETH=0.005` - Reasonable gas limit
-- Gas limit buffer: 10% (reduced from 20%)
-- Base fee buffer: 0% (no buffer, use raw baseFee)
-- Dynamic priority fee from network with safety cap
+- `MAX_PRIORITY_FEE_GWEI=0.01`, `DEFAULT_MAX_GAS_ETH=0.005`
+- Gas limit buffer 10%; base fee buffer 0% (raw baseFee); dynamic priority fee from recent blocks, capped for safety.
+- On the snipe path a fixed `gasLimit` is used to skip a live `estimateGas` RPC round-trip.
 
-### Typical Gas Costs
-- **Free mints**: ~0.00002-0.00003 ETH (~$0.05-0.08 at $2500 ETH)
-- **Paid mints**: mint price + gas fee above
-
-### How Gas is Calculated
 ```
-maxFeePerGas = baseFee + maxPriorityFeePerGas
-gasLimit = estimateGas * 1.10 (10% buffer)
+maxFeePerGas = baseFee * baseFeeMultiplier + priorityFee
+gasLimit     = estimateGas * 1.10   (or fixed SNIPE_GAS_LIMIT on the hot path)
 totalGasCost = gasLimit * maxFeePerGas
 ```
 
-### Dynamic Priority Fee
-Bot automatically fetches network priority fee from last 4 blocks (median of 50th percentile), capped at `MAX_PRIORITY_FEE_GWEI` config for safety.
+**Per-chain snipe profiles** (`src/chains.ts`):
 
-### Comparison with Manual Wallet Mint
-Bot achieves **similar gas costs** to manual MetaMask/wallet minting when properly configured (~0.00002 ETH).
+| Chain | Priority fee | baseFee mult | Hammer interval | Lead | Gas limit |
+|---|---|---|---|---|---|
+| Ethereum | 2 gwei | 3× | 150 ms | 800 ms | 250,000 |
+| Robinhood | 0 gwei | 4× | 50 ms | 1200 ms | 300,000 |
 
-### Tuning for Your Needs
-- **Cheaper gas, slower confirm**: Lower `MAX_PRIORITY_FEE_GWEI` to 0.001
-- **Faster confirm, higher gas**: Increase to 0.1-1.0
-- **Emergency fast mint**: Use `/set_priorityfee 2` for individual mint
+Tuning: lower `MAX_PRIORITY_FEE_GWEI` for cheaper/slower; raise for faster confirms; `/set_priorityfee 2` for an urgent one-off.
 
 ---
 
 ## Risk Controls
 
-Before every mint, the bot automatically checks:
+Before every mint the bot checks:
 
 1. URL is valid and from opensea.io
-2. Collection is on Ethereum mainnet
-3. Contract is not in local blacklist
+2. Collection is on the active chain
+3. Contract is not in the local blacklist
 4. Contract is verified on Etherscan
 5. Contract is older than 1 hour
-6. GoPlus Security scan (honeypot + malicious behavior detection)
-7. SeaDrop interface detected
-8. Mint is currently active
+6. GoPlus security scan (honeypot / malicious behavior)
+7. SeaDrop interface / drop detected
+8. Mint is currently active (stage open)
 9. Supply is available
-10. Mint price is within your configured limit
-11. Gas estimate is within your configured limit
+10. Mint price within your configured limit
+11. Gas estimate within your configured limit
 12. An idle wallet is available
+
+---
+
+## Project Layout
+
+```
+src/
+  bot/          Telegraf bot: commands/ + middleware (auth, rate limit)
+  mint/         engine, dropDetector, dropMinter, seadropDetector,
+                mintConfigReader, calldataBuilder, gasEstimator,
+                transactionSender, txMonitor, dryRun, openseaAuth
+  rpc/          client (ranked + fallback), proxyPool
+  wallet/       pool, balanceChecker
+  risk/         validator, blacklist, etherscanCheck, goplusCheck
+  db/           SQLite tables + accessors (incl. app_settings, rpcEndpoints, proxies)
+  config/       Zod-validated env
+  chains.ts     per-chain profiles + snipe tuning
+  utils/        logger, clockCheck
+```
 
 ---
 
 ## Contributing
 
-Contributions are welcome!
-
-1. Fork the repository
+1. Fork the repo
 2. Create a feature branch: `git checkout -b feature/your-feature`
-3. Commit your changes: `git commit -m 'feat: add your feature'`
-4. Push to the branch: `git push origin feature/your-feature`
-5. Open a Merge Request
+3. Commit: `git commit -m 'feat: add your feature'`
+4. Push: `git push origin feature/your-feature`
+5. Open a Pull Request
 
-Please follow the existing code style (TypeScript strict mode, no `any` types, explicit return types on all functions).
+Follow the existing style: TypeScript strict mode, no `any`, explicit return types. Run `npm run typecheck` and `npm run build` before submitting.
 
 ---
 
 ## License
 
-MIT License — see [LICENSE](LICENSE) for details.
+MIT — see [LICENSE](LICENSE).
 
-This project is not affiliated with or endorsed by OpenSea, Alchemy, or any other third-party service mentioned in this documentation.
+Not affiliated with or endorsed by OpenSea, Alchemy, Etherscan, or any third-party service mentioned here.
