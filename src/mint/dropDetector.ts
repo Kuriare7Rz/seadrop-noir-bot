@@ -1,7 +1,7 @@
 import axios, { AxiosError } from 'axios';
 import { config } from '../config';
 import { logger } from '../utils/logger';
-import { openSeaHeaders, isAuthError } from './openseaAuth';
+import { openSeaHeaders, isAuthError, openSeaAgentOpts } from './openseaAuth';
 
 /** Thrown when OpenSea rejects the API key (401/403). Surfaced to the user as
  *  an actionable error instead of silently falling back to on-chain public-only
@@ -50,6 +50,7 @@ export async function checkIfDrop(slug: string): Promise<DropInfo | null> {
     const response = await axios.get<DropInfo>(url, {
       headers: openSeaHeaders(),
       timeout: 5000,
+      ...openSeaAgentOpts(),
     });
 
     logger.info(`[DROP] ${slug} is a Drop collection (${response.data.drop_type})`);

@@ -3,6 +3,7 @@ import { privateKeyToAccount } from 'viem/accounts';
 import { config } from '../config';
 import { logger } from '../utils/logger';
 import { getFastestRpcUrl, getRankedUrls } from '../rpc/client';
+import { leaseNonce, hasNonce, releaseNonce } from './nonceManager';
 import type { MintCalldata } from './calldataBuilder';
 import type { GasEstimate } from './gasEstimator';
 
@@ -65,23 +66,56 @@ export async function sendMintTransactionParallel(
     return sendMintTransaction(calldata, privateKey, gasEstimate);
   }
 
-  // Prepare + sign once against the fastest RPC (needs nonce/chainId).
-  const primaryClient = createWalletClient({
-    account,
-    chain: config.chain.chain,
-    transport: http(urls[0]!),
-  });
+  // ---- Local assembly + signing (NO RPC round-trip on the hot path) ----
+  // If the wallet's nonce was pre-armed during pre-arm, build and sign the tx
+  // fully offline using the cached nonce + local chainId. This removes the
+  // blocking prepareTransactionRequest() call (nonce + chainId fetch) that
+  // otherwise runs at fire time — the single biggest latency cost in the
+  // critical window (see MEMORY: never do RPC in the snipe hot path).
+  let serializedTransaction: `0x${string}`;
+  let leasedAddress: `0x${string}` | null = null;
 
-  const request = await primaryClient.prepareTransactionRequest({
-    to: calldata.to,
-    data: calldata.data,
-    value: calldata.value,
-    gas: gasEstimate.gasLimit,
-    maxFeePerGas: gasEstimate.maxFeePerGas,
-    maxPriorityFeePerGas: gasEstimate.maxPriorityFeePerGas,
-    type: 'eip1559',
-  });
-  const serializedTransaction = await primaryClient.signTransaction(request);
+  if (hasNonce(account.address)) {
+    const { nonce, chainId } = leaseNonce(account.address);
+    leasedAddress = account.address;
+    try {
+      serializedTransaction = await account.signTransaction({
+        to: calldata.to,
+        data: calldata.data,
+        value: calldata.value,
+        gas: gasEstimate.gasLimit,
+        maxFeePerGas: gasEstimate.maxFeePerGas,
+        maxPriorityFeePerGas: gasEstimate.maxPriorityFeePerGas,
+        nonce,
+        chainId,
+        type: 'eip1559',
+      });
+      logger.info(`[TX] Locally signed (nonce=${nonce}, chainId=${chainId}) — no fire-time RPC prep`);
+    } catch (err) {
+      // Signing failed — return the leased nonce so it isn't burned.
+      releaseNonce(account.address);
+      throw err;
+    }
+  } else {
+    // Fallback: nonce not pre-armed (e.g. window-guard path). Prepare against
+    // the fastest RPC once, then still broadcast in parallel.
+    logger.warn(`[TX] Nonce not pre-armed for ${account.address.slice(0, 8)}...; using RPC prepare fallback`);
+    const primaryClient = createWalletClient({
+      account,
+      chain: config.chain.chain,
+      transport: http(urls[0]!),
+    });
+    const request = await primaryClient.prepareTransactionRequest({
+      to: calldata.to,
+      data: calldata.data,
+      value: calldata.value,
+      gas: gasEstimate.gasLimit,
+      maxFeePerGas: gasEstimate.maxFeePerGas,
+      maxPriorityFeePerGas: gasEstimate.maxPriorityFeePerGas,
+      type: 'eip1559',
+    });
+    serializedTransaction = await primaryClient.signTransaction(request);
+  }
 
   logger.info(
     `[TX] Parallel broadcast from ${account.address.slice(0, 8)}... to ${urls.length} RPC(s) on ${config.chain.label}`
@@ -106,7 +140,9 @@ export async function sendMintTransactionParallel(
     logger.info(`[TX] Parallel broadcast winner hash: ${txHash}`);
     return { txHash };
   } catch {
-    // Every RPC rejected the raw tx.
+    // Every RPC rejected the raw tx. If we leased a nonce, roll it back so the
+    // wallet can retry cleanly (the tx never entered any mempool).
+    if (leasedAddress) releaseNonce(leasedAddress);
     throw new Error('All RPC endpoints rejected the transaction during parallel broadcast');
   }
 }

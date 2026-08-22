@@ -2,7 +2,7 @@ import axios, { AxiosError } from 'axios';
 import { config } from '../config';
 import { logger } from '../utils/logger';
 import { getProxyAgentForWallet, getProxyUrlForWallet } from '../rpc/proxyPool';
-import { openSeaHeaders } from './openseaAuth';
+import { openSeaHeaders, openSeaAgentOpts } from './openseaAuth';
 import type { Address } from 'viem';
 
 export interface DropMintTransactionData {
@@ -49,7 +49,9 @@ export async function buildDropMintTransaction(
           'Content-Type': 'application/json',
         }),
         timeout: 10000,
-        ...(proxyAgent ? { httpsAgent: proxyAgent, proxy: false as const } : {}),
+        // Proxied: use the wallet's proxy agent (own pool). Direct: reuse a
+        // warm keep-alive connection so the hammer loop skips TLS handshakes.
+        ...(proxyAgent ? { httpsAgent: proxyAgent, proxy: false as const } : openSeaAgentOpts()),
       }
     );
 

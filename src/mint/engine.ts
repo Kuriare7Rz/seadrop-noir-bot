@@ -18,6 +18,8 @@ import { logger } from '../utils/logger';
 import { getLatestBaseFee, benchmarkAndRank } from '../rpc/client';
 import { checkIfDrop, anyStageOpen, getNextOpeningStage, msUntilStageOpens, OpenSeaAuthError } from './dropDetector';
 import { buildDropMintTransaction } from './dropMinter';
+import { prefetchNonce, clearNonce } from './nonceManager';
+import { monotonicTargetFromDelay, sleepUntilMonotonic } from '../utils/clock';
 
 export interface WalletRange {
   /** 1-based index of the first wallet to use (inclusive) */
@@ -154,15 +156,19 @@ async function executeSingleWalletMint(
           config.mint.snipeBaseFeeMultiplier
         );
 
-        // Wait until just before the window opens (lead time).
-        if (!alreadyOpen && msToOpen !== null && msToOpen > config.mint.snipeLeadMs) {
-          const preWait = msToOpen - config.mint.snipeLeadMs;
-          logger.info(`[SNIPE] Pre-armed for ${snipeDesc}. Waiting ${Math.round(preWait / 1000)}s until T-${config.mint.snipeLeadMs}ms`);
-          await new Promise((r) => setTimeout(r, preWait));
+        // Pre-arm the wallet nonce + chainId NOW (T-minus), so the fire-time
+        // broadcast can sign locally with zero RPC round-trip. Clear any stale
+        // cached nonce first so a failed prefetch can't reuse an old value.
+        clearNonce(wallet.address as `0x${string}`);
+        try {
+          await prefetchNonce(wallet.address as `0x${string}`);
+        } catch (err) {
+          logger.warn(`[SNIPE] Nonce pre-arm failed for ${snipeDesc}: ${err instanceof Error ? err.message : 'unknown'} (will RPC-prepare at fire)`);
         }
 
-        // Auto RPC pre-check: benchmark + re-rank right before firing so the
-        // fastest RPC is always used, without needing a manual /check_rpc.
+        // Auto RPC pre-check: benchmark + re-rank DURING pre-arm (well before
+        // T-0), so the fastest RPC is ranked without adding a benchmark round
+        // to the critical window. Runs before the pre-open wait.
         if (config.mint.snipeRpcPrecheck) {
           try {
             const ranked = await benchmarkAndRank();
@@ -175,6 +181,14 @@ async function executeSingleWalletMint(
           } catch (err) {
             logger.warn(`[SNIPE] RPC pre-check failed: ${err instanceof Error ? err.message : 'unknown'}`);
           }
+        }
+
+        // Wait until just before the window opens (lead time). Use a monotonic
+        // countdown so an NTP wall-clock adjustment can't skew the fire time.
+        if (!alreadyOpen && msToOpen !== null && msToOpen > config.mint.snipeLeadMs) {
+          const preWait = msToOpen - config.mint.snipeLeadMs;
+          logger.info(`[SNIPE] Pre-armed for ${snipeDesc}. Waiting ${Math.round(preWait / 1000)}s until T-${config.mint.snipeLeadMs}ms`);
+          await sleepUntilMonotonic(monotonicTargetFromDelay(preWait));
         }
 
         // --- Hammer /mint until 200 + signature, then broadcast instantly ---

@@ -1,9 +1,29 @@
 import axios, { AxiosError } from 'axios';
+import { Agent as HttpAgent } from 'http';
+import { Agent as HttpsAgent } from 'https';
 import { config } from '../config';
 import { getAppSetting, setAppSetting, getAppSettingMeta } from '../db/appSettings';
 import { logger } from '../utils/logger';
 
 export const OPENSEA_KEY_SETTING = 'opensea_api_key';
+
+/**
+ * Shared keep-alive agents for OpenSea HTTP calls.
+ *
+ * Without these, axios uses the global agent with keepAlive=false, so every
+ * hammer attempt opens a fresh TCP+TLS connection to OpenSea (~50-150ms of
+ * handshake burned per request). Reusing warm connections removes that from
+ * the snipe hot path. `maxSockets` allows several parallel in-flight requests
+ * per host while still pooling. These agents are used for DIRECT calls only;
+ * proxied calls supply their own HttpsProxyAgent (see proxyPool).
+ */
+export const openSeaHttpAgent = new HttpAgent({ keepAlive: true, maxSockets: 64, keepAliveMsecs: 15_000 });
+export const openSeaHttpsAgent = new HttpsAgent({ keepAlive: true, maxSockets: 64, keepAliveMsecs: 15_000 });
+
+/** Axios per-request options that enable connection reuse for direct calls. */
+export function openSeaAgentOpts(): { httpAgent: HttpAgent; httpsAgent: HttpsAgent } {
+  return { httpAgent: openSeaHttpAgent, httpsAgent: openSeaHttpsAgent };
+}
 
 /**
  * Effective OpenSea API key: a runtime override set via /api (DB) takes
@@ -71,6 +91,7 @@ export async function verifyOpenSeaKey(key?: string, probeSlug = 'ntrpygenesis')
       headers: { 'x-api-key': effective, Accept: 'application/json' },
       timeout: 6000,
       validateStatus: () => true,
+      ...openSeaAgentOpts(),
     });
     if (res.status === 401 || res.status === 403) {
       return { ok: false, status: res.status, detail: 'Invalid or unauthorized API key' };
