@@ -1,6 +1,8 @@
 import type { Context } from 'telegraf';
 import { formatEther } from 'viem';
 import { checkWhitelist, type WlReport } from '../../whitelist/check';
+import { walletPool } from '../../wallet/pool';
+import type { WalletRange } from '../../mint/engine';
 
 /**
  * /wl <opensea_url | slug | contract> — whitelist eligibility check for
@@ -17,10 +19,53 @@ function shortAddress(address: string): string {
   return `${address.slice(0, 6)}…${address.slice(-4)}`;
 }
 
+/**
+ * Parse optional wallet range arguments: /wl <input> [from] [to].
+ * Same semantics as parseWalletRange in mint.ts — 1-based, a lone [from]
+ * means that single wallet, [to] is clamped to the pool size.
+ */
+function parseWlRange(
+  parts: string[]
+): { range: WalletRange | undefined; error: string | undefined } {
+  const fromStr = parts[2];
+  const toStr = parts[3];
+
+  if (!fromStr) return { range: undefined, error: undefined };
+
+  const from = parseInt(fromStr, 10);
+  const to = toStr !== undefined ? parseInt(toStr, 10) : from;
+
+  if (isNaN(from) || from < 1) {
+    return {
+      range: undefined,
+      error: `Invalid wallet range start: <b>${fromStr}</b>. Must be a positive number.`,
+    };
+  }
+  if (isNaN(to) || to < from) {
+    return {
+      range: undefined,
+      error: `Invalid wallet range end: <b>${toStr}</b>. Must be ≥ start (${from}).`,
+    };
+  }
+
+  const totalWallets = walletPool.getWalletCount();
+  if (from > totalWallets) {
+    return {
+      range: undefined,
+      error: `Wallet range start <b>${from}</b> exceeds total wallets in pool (<b>${totalWallets}</b>).`,
+    };
+  }
+
+  return { range: { from, to: Math.min(to, totalWallets) }, error: undefined };
+}
+
 function formatReport(report: WlReport): string {
   const title = report.slug ?? report.contract ?? report.input;
+  const rangeNote = report.range
+    ? ` · wallets ${report.range.from}–${report.range.to}`
+    : '';
   const lines: string[] = [
-    `🎟 <b>WL Check — ${title}</b> (${report.chainLabel})`,
+    `🎟 <b>WL Check — ${title}</b> (${report.chainLabel}${rangeNote})`,
   ];
   if (report.contract) lines.push(`Contract: <code>${report.contract}</code>`);
   lines.push('');
@@ -74,21 +119,33 @@ function formatReport(report: WlReport): string {
 export async function wlCommand(ctx: Context): Promise<void> {
   const text =
     ctx.message && 'text' in ctx.message ? ctx.message.text : '';
-  const input = text.trim().split(/\s+/)[1];
+  const parts = text.trim().split(/\s+/);
+  const input = parts[1];
 
   if (!input) {
     await ctx.reply(
-      '🎟 <b>Usage:</b> /wl &lt;opensea_url | slug | contract_address&gt;\n' +
-        'Checks every pool wallet against the drop: OpenSea gated eligibility ' +
-        '(authoritative) + SeaDrop on-chain state.',
+      '🎟 <b>Usage:</b> /wl &lt;opensea_url | slug | contract_address&gt; [from] [to]\n' +
+        'Checks pool wallets against the drop: OpenSea gated eligibility ' +
+        '(authoritative) + SeaDrop on-chain state. Optional [from] [to] limits ' +
+        'the check to a wallet range, e.g. /wl &lt;url&gt; 5 12.',
       { parse_mode: 'HTML' }
     );
     return;
   }
 
-  await ctx.reply('🎟 Checking WL eligibility for all pool wallets…');
+  const { range, error } = parseWlRange(parts);
+  if (error) {
+    await ctx.reply(`❌ ${error}`, { parse_mode: 'HTML' });
+    return;
+  }
+
+  await ctx.reply(
+    range
+      ? `🎟 Checking WL eligibility for wallets ${range.from}–${range.to}…`
+      : '🎟 Checking WL eligibility for all pool wallets…'
+  );
   try {
-    const report = await checkWhitelist(input);
+    const report = await checkWhitelist(input, range);
     await ctx.reply(formatReport(report), { parse_mode: 'HTML' });
   } catch (err) {
     await ctx.reply(

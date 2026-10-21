@@ -7,6 +7,7 @@ import { walletPool } from '../wallet/pool';
 import { logger } from '../utils/logger';
 import { checkOpenSeaEligibility, type OpenSeaEligibility } from './siwe';
 import { readSeaDropState, type SeaDropState } from './seadrop';
+import type { WalletRange } from '../mint/engine';
 
 /**
  * /wl orchestrator: one drop in, a per-wallet eligibility matrix out.
@@ -36,6 +37,7 @@ export interface WlReport {
   slug: string | null;
   contract: Address | null;
   chainLabel: string;
+  range: WalletRange | null;
   results: WalletWlResult[];
 }
 
@@ -112,22 +114,32 @@ export function parseWlInput(raw: string): { slug: string | null; contract: Addr
   );
 }
 
-export async function checkWhitelist(rawInput: string): Promise<WlReport> {
+export async function checkWhitelist(
+  rawInput: string,
+  range?: WalletRange
+): Promise<WlReport> {
   let { slug, contract } = parseWlInput(rawInput);
   if (slug && !contract) contract = await resolveContractFromSlug(slug);
   if (contract && !slug) slug = await resolveSlugFromContract(contract);
 
-  const pool = walletPool.getPoolStatus();
-  if (pool.length === 0) {
+  const all = walletPool.getPoolStatus();
+  if (all.length === 0) {
     throw new Error('No wallets configured in the pool.');
   }
+
+  // Optional [from] [to] wallet range — same 1-based, inclusive, clamped
+  // semantics as /mint_max and /schedule_mint. Wallet numbers in the report
+  // stay global (matching /wallets), not relative to the slice.
+  const startIdx = range ? range.from - 1 : 0;
+  const endIdx = range ? Math.min(range.to, all.length) : all.length;
+  const pool = all.slice(startIdx, endIdx);
 
   const results: WalletWlResult[] = [];
   for (let i = 0; i < pool.length; i++) {
     const entry = pool[i]!;
     const address = entry.address as Address;
     const result: WalletWlResult = {
-      index: i + 1,
+      index: startIdx + i + 1,
       address,
       opensea: null,
       seadrop: null,
@@ -165,6 +177,7 @@ export async function checkWhitelist(rawInput: string): Promise<WlReport> {
     slug,
     contract,
     chainLabel: config.chain.label,
+    range: range ?? null,
     results,
   };
 }

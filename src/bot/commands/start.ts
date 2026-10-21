@@ -23,7 +23,7 @@ export async function startCommand(ctx: Context): Promise<void> {
     `/mint &lt;opensea_url&gt; \u2014 Start a mint job\n` +
     `/mint_max &lt;opensea_url&gt; \u2014 Mint max quantity\n` +
     `/wallets \u2014 View wallet pool\n` +
-    `/wl &lt;opensea_url&gt; \u2014 Check WL eligibility for all wallets\n` +
+    `/wl &lt;opensea_url&gt; [from] [to] \u2014 Check WL eligibility (wallet range optional)\n` +
     `/settings \u2014 View your settings\n` +
     `/help \u2014 All commands\n\n` +
     `<i>\u26a0\ufe0f Use burner wallets only. Never use wallets with significant funds.</i>`,
@@ -41,7 +41,7 @@ export async function helpCommand(ctx: Context): Promise<void> {
     `/status \u2014 Active mint jobs right now\n` +
     `/history \u2014 Last 20 mint transactions\n` +
     `/cancel &lt;job_id&gt; \u2014 Cancel a pending job\n` +
-    `/wl &lt;url | slug | contract&gt; \u2014 Whitelist eligibility for all pool wallets (OpenSea + SeaDrop)\n\n` +
+    `/wl &lt;url | slug | contract&gt; [from] [to] \u2014 Whitelist eligibility for pool wallets (OpenSea + SeaDrop)\n\n` +
     `<b>\u23f0 Scheduled / Snipe</b>\n` +
     `/schedule_mint &lt;url&gt; &lt;time&gt; [from] [to] \u2014 Schedule a mint at a WIB time\n` +
     `/schedule_mint_max &lt;url&gt; &lt;time&gt; [from] [to] \u2014 Same, but max quantity\n` +

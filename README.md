@@ -245,7 +245,7 @@ Schedule mints to fire automatically at a set time (times are **WIB / Asia-Jakar
 | `/history` | Last 20 mint transactions |
 | `/cancel <job_id>` | Cancel a pending job |
 | **Whitelist Check** | |
-| `/wl <url \| slug \| contract>` | Eligibility matrix for all pool wallets: OpenSea gated stages (SIWE) + SeaDrop on-chain state |
+| `/wl <url \| slug \| contract> [from] [to]` | Eligibility matrix for pool wallets (optional wallet range): OpenSea gated stages (SIWE) + SeaDrop on-chain state |
 | **Scheduled Mints** | |
 | `/schedule_mint <url> <time> [from] [to]` | Schedule a mint (WIB) |
 | `/schedule_mint_max <url> <time> [from] [to]` | Schedule a max-quantity mint |
