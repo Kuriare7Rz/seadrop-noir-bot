@@ -6,6 +6,10 @@ Supports **Ethereum mainnet** and **Robinhood Chain**, up to 100 concurrent wall
 
 > ⚠️ Self-hosted, burner-wallet tooling. No warranty. Use at your own risk. Not affiliated with OpenSea.
 
+## 🙏 Credits
+
+**Noir is the V2 upgrade of [seadrop_nft_minter](https://github.com/Taqiyaoezanik/seadrop_nft_minter) by [@Taqiyaoezanik](https://github.com/Taqiyaoezanik).** The original bot laid the foundation — the Telegram mint queue, wallet pool, and risk validation. Noir builds on top of it with multi-chain support (Ethereum + Robinhood Chain), DB-backed RPC ranking, per-wallet proxy rotation, runtime OpenSea API key hot-swap, the Window Guard + snipe V2 hot path, and `/wl` eligibility checking. Full credit for the original work goes to its author.
+
 ---
 
 ## ✨ Features
