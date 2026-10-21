@@ -16,6 +16,7 @@ Supports **Ethereum mainnet** and **Robinhood Chain**, up to 100 concurrent wall
 
 - 🤖 **Automated minting** — queue mints; the bot resolves, validates, and executes end-to-end
 - 🎫 **Stage-aware WL/allowlist** — reads OpenSea drop stages (public / signed presale / allowlist) and lets OpenSea auto-select the stage your wallet is eligible for; never force-picks public
+- 🎟 **WL eligibility checker (`/wl`)** — before committing to a mint, check *every* pool wallet against a drop in one matrix: OpenSea gated eligibility via SIWE + `DropEligibilityQuery` (authoritative) plus SeaDrop on-chain state (public stage, caps, supply, allowlist root)
 - 🛡️ **Window Guard** — if a stage hasn't opened, polls until *any* eligible stage goes live, then fires (no early 422 spam)
 - 🚀 **Snipe mode** — pre-arms wallet + gas before open, hammers `/mint` until it returns a signed tx, then broadcasts instantly (skips live `estimateGas` on the hot path)
 - 📡 **Parallel broadcast** — signs once and blasts the raw tx to *all* ranked RPCs simultaneously; first landing wins
@@ -243,6 +244,8 @@ Schedule mints to fire automatically at a set time (times are **WIB / Asia-Jakar
 | `/status_plus` | Detailed status view |
 | `/history` | Last 20 mint transactions |
 | `/cancel <job_id>` | Cancel a pending job |
+| **Whitelist Check** | |
+| `/wl <url \| slug \| contract>` | Eligibility matrix for all pool wallets: OpenSea gated stages (SIWE) + SeaDrop on-chain state |
 | **Scheduled Mints** | |
 | `/schedule_mint <url> <time> [from] [to]` | Schedule a mint (WIB) |
 | `/schedule_mint_max <url> <time> [from] [to]` | Schedule a max-quantity mint |
@@ -429,6 +432,7 @@ src/
   mint/         engine, dropDetector, dropMinter, seadropDetector,
                 mintConfigReader, calldataBuilder, gasEstimator,
                 transactionSender, txMonitor, dryRun, openseaAuth
+  whitelist/    /wl checker: siwe (OpenSea eligibility), seadrop (on-chain), check (orchestrator)
   rpc/          client (ranked + fallback), proxyPool
   wallet/       pool, balanceChecker
   risk/         validator, blacklist, etherscanCheck, goplusCheck
@@ -436,6 +440,12 @@ src/
   config/       Zod-validated env
   chains.ts     per-chain profiles + snipe tuning
   utils/        logger, clockCheck
+```
+
+Standalone extras (not part of the bot):
+
+```
+tools/          direct-contract snipe scripts (squiggle + reusable template) and deploy setup notes
 ```
 
 ---
