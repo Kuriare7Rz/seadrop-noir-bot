@@ -442,11 +442,6 @@ src/
   utils/        logger, clockCheck
 ```
 
-Standalone extras (not part of the bot):
-
-```
-tools/          direct-contract snipe scripts (squiggle + reusable template) and deploy setup notes
-```
 
 ---
 
